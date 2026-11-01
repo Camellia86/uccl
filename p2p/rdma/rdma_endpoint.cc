@@ -52,6 +52,19 @@ bool RDMAEndpoint::initialize_rdma_ctx_for_gpu(
     actual_device_ids = device_ids;
   }
 
+  // Without an RDMA NIC there is nothing to build contexts on. Fail with an
+  // error the caller can see instead of tripping the assert in
+  // initialize_contexts (or dividing by zero there when asserts are off).
+  if (actual_device_ids.empty()) {
+    std::string msg = "No RDMA device found for GPU " +
+                      std::to_string(gpu_index) +
+                      "; select one with UCCL_P2P_RDMA_DEV";
+    if (UCCL_P2P_ENABLE_NCCL)
+      msg += ", or set UCCL_P2P_TRANSPORT=nccl on hosts without RDMA NICs";
+    UCCL_LOG(ERROR) << msg;
+    throw std::runtime_error(msg);
+  }
+
   initialize_contexts(actual_device_ids);
   UCCL_LOG(INFO, UCCL_RDMA)
       << "RDMAEndpoint initialized with " << contexts_.size()
@@ -223,6 +236,11 @@ bool RDMAEndpoint::dereg_mem(std::shared_ptr<RegMemBlock> reg_block) {
   return true;
 }
 
+void RDMAEndpoint::prepare_compress_ctx(void* const data, size_t const len,
+                                        CompressCtx compress_ctx) {
+  Compressor::get_instance().prepare_split_context(data, len, compress_ctx);
+}
+
 int RDMAEndpoint::uccl_regmr(void* const data, size_t const len,
                              MRArray& mr_array,
                              std::vector<MrCacheHandleRef>& cache_refs,
@@ -231,7 +249,7 @@ int RDMAEndpoint::uccl_regmr(void* const data, size_t const len,
     UCCL_LOG(ERROR) << "Error: uccl_regmr called with null data";
     return -1;
   }
-  Compressor::get_instance().prepare_split_context(data, len, compress_ctx);
+  prepare_compress_ctx(data, len, compress_ctx);
   // Register once per unique RdmaContext to avoid redundant MR
   // registrations: with DMA-BUF each duplicate consumes a GPU DMA mapping
   // VA slot; with nvidia_peermem each duplicate re-pins pages under a
